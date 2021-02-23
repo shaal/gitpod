@@ -4,7 +4,9 @@
 
 FROM alpine:latest
 RUN apk add ca-certificates
+# convenience scripting tools
+RUN apk add bash moreutils
 COPY test--app/bin /tests
 ENV PATH=$PATH:/tests
-RUN sh -c "echo '#!/bin/sh' > /entrypoint.sh; echo 'set -ex' >> /entrypoint.sh; echo 'for i in \$(ls /tests/*.test); do \$i \$*; done' >> /entrypoint.sh; chmod +x /entrypoint.sh"
+COPY entrypoint.sh /entrypoint.sh
 ENTRYPOINT [ "/entrypoint.sh" ]
