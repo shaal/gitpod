@@ -5,7 +5,6 @@
 package storage
 
 import (
-	"context"
 	"fmt"
 	"io/ioutil"
 	"net/http"
@@ -60,12 +59,10 @@ func TestUploadUrl(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
-			it := integration.NewTest(t)
+			it, ctx := integration.NewTest(t, 15*time.Second)
 			defer it.Done()
 
 			bs := it.API().BlobService()
-			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-			defer cancel()
 			resp, err := bs.UploadUrl(ctx, &api.UploadUrlRequest{OwnerId: test.InputOwnerID, Name: test.InputName})
 			if err != nil && test.ExpectedErrorCode == codes.OK {
 				t.Fatal(err)
@@ -103,12 +100,10 @@ func TestDownloadUrl(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.Name, func(t *testing.T) {
-			it := integration.NewTest(t)
+			it, ctx := integration.NewTest(t, 5*time.Second)
 			defer it.Done()
 
 			bs := it.API().BlobService()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
 			resp, err := bs.DownloadUrl(ctx, &api.DownloadUrlRequest{OwnerId: test.InputOwnerID, Name: test.InputName})
 			if err != nil && test.ExpectedErrorCode == codes.OK {
 				t.Fatal(err)
@@ -131,14 +126,12 @@ func TestDownloadUrl(t *testing.T) {
 }
 
 func TestUploadDownloadBlob(t *testing.T) {
-	it := integration.NewTest(t)
+	it, ctx := integration.NewTest(t, 5*time.Second)
 	defer it.Done()
 
 	blobContent := fmt.Sprintf("Hello Blobs! It's %s!", time.Now())
 
 	bs := it.API().BlobService()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	resp, err := bs.UploadUrl(ctx, &api.UploadUrlRequest{OwnerId: gitpodBuiltinUserID, Name: "test-blob"})
 	if err != nil {
 		t.Fatal(err)
@@ -163,11 +156,8 @@ func TestUploadDownloadBlob(t *testing.T) {
 
 // TestUploadDownloadBlobViaServer uploads a blob via server → content-server and downloads it afterwards
 func TestUploadDownloadBlobViaServer(t *testing.T) {
-	it := integration.NewTest(t)
+	it, ctx := integration.NewTest(t, 10*time.Second)
 	defer it.Done()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	blobContent := fmt.Sprintf("Hello Blobs! It's %s!", time.Now())
 
