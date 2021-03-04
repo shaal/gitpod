@@ -249,6 +249,45 @@ type Token struct {
 	Reuse      api.TokenReuse
 }
 
+// Match checks whether token can be reused to access for the given args
+func (tkn *Token) Match(host string, scopes []string) bool {
+	if tkn.Host != host {
+		return false
+	}
+
+	if tkn.ExpiryDate != nil && time.Now().After(*tkn.ExpiryDate) {
+		return false
+	}
+
+	if tkn.Reuse == api.TokenReuse_REUSE_NEVER {
+		return false
+	}
+	if tkn.Reuse == api.TokenReuse_REUSE_EXACTLY && len(tkn.Scope) != len(scopes) {
+		return false
+	}
+
+	if !tkn.HasScopes(scopes) {
+		return false
+	}
+
+	return true
+}
+
+// HasScopes checks whether token can be used to access for the given scopes
+func (tkn *Token) HasScopes(scopes []string) bool {
+	for _, scp := range scopes {
+		if scp == "" {
+			// empty scope can be used to fetch first matching token
+			continue
+		}
+		if _, ok := tkn.Scope[scp]; !ok {
+			return false
+		}
+	}
+
+	return true
+}
+
 type tokenProvider interface {
 	GetToken(ctx context.Context, req *api.GetTokenRequest) (tkn *Token, err error)
 }
@@ -262,9 +301,9 @@ type InMemoryTokenService struct {
 
 // GetToken returns a token for a host
 func (s *InMemoryTokenService) GetToken(ctx context.Context, req *api.GetTokenRequest) (*api.GetTokenResponse, error) {
-	tkn, ok := s.getCachedTokenFor(req.Kind, req.Host, req.Scope)
-	if ok {
-		return &api.GetTokenResponse{Token: tkn}, nil
+	tkn := s.getCachedTokenFor(req.Kind, req.Host, req.Scope)
+	if tkn != nil {
+		return asGetTokenResponse(tkn), nil
 	}
 
 	s.mu.RLock()
@@ -282,53 +321,30 @@ func (s *InMemoryTokenService) GetToken(ctx context.Context, req *api.GetTokenRe
 		}
 
 		s.cacheToken(req.Kind, tkn)
-		return &api.GetTokenResponse{Token: tkn.Token, User: tkn.User}, nil
+		return asGetTokenResponse(tkn), nil
 	}
 
 	return nil, status.Error(codes.NotFound, "no token available")
 }
 
-func (s *InMemoryTokenService) getCachedTokenFor(kind string, host string, scopes []string) (tkn string, ok bool) {
+func asGetTokenResponse(tkn *Token) *api.GetTokenResponse {
+	resp := &api.GetTokenResponse{Token: tkn.Token, User: tkn.User}
+	for scope := range tkn.Scope {
+		resp.Scope = append(resp.Scope, scope)
+	}
+	return resp
+}
+
+func (s *InMemoryTokenService) getCachedTokenFor(kind string, host string, scopes []string) *Token {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	var res *Token
-	token := s.token[kind]
-	for _, tkn := range token {
-		if tkn.Host != host {
-			continue
+	for _, tkn := range s.token[kind] {
+		if tkn.Match(host, scopes) {
+			return tkn
 		}
-
-		if tkn.ExpiryDate != nil && time.Now().After(*tkn.ExpiryDate) {
-			continue
-		}
-
-		if tkn.Reuse == api.TokenReuse_REUSE_NEVER {
-			continue
-		}
-		if tkn.Reuse == api.TokenReuse_REUSE_EXACTLY && len(tkn.Scope) != len(scopes) {
-			continue
-		}
-
-		hasScopes := true
-		for _, scp := range scopes {
-			if _, ok := tkn.Scope[scp]; !ok {
-				hasScopes = false
-				break
-			}
-		}
-		if !hasScopes {
-			continue
-		}
-
-		res = tkn
-		break
 	}
-
-	if res == nil {
-		return "", false
-	}
-	return res.Token, true
+	return nil
 }
 
 func (s *InMemoryTokenService) cacheToken(kind string, tkn *Token) {

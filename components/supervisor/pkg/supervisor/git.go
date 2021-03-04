@@ -51,12 +51,16 @@ func (p *GitTokenProvider) GetToken(ctx context.Context, req *api.GetTokenReques
 		}
 		expiryDate = &t
 	}
-	return &Token{
+	tkn = &Token{
 		User:       token.Username,
 		Token:      token.Value,
 		Host:       req.Host,
 		Scope:      scopes,
 		ExpiryDate: expiryDate,
 		Reuse:      api.TokenReuse_REUSE_WHEN_POSSIBLE,
-	}, nil
+	}
+	if !tkn.HasScopes(req.Scope) {
+		return nil, nil
+	}
+	return tkn, nil
 }
