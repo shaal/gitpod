@@ -3,6 +3,7 @@ package supervisor
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/gitpod-io/gitpod/supervisor/api"
 	"google.golang.org/grpc"
@@ -90,26 +91,21 @@ func Test(t *testing.T) {
 		}
 
 		// add a first subscriber
-		receivedRequestChannel := make(chan *api.NotifyRequest)
 		firstSubscriber := NewSubscribeServer()
 		defer firstSubscriber.cancel()
 
 		// verify that late subscriber consumes cached notification
 		go func() {
-			select {
-			case subscriptionRequest, ok := <-firstSubscriber.resps:
-				if !ok {
-					t.Errorf("notification stream closed")
-				}
-				receivedRequestChannel <- subscriptionRequest.Request
-			default:
-				t.Errorf("late subscriber did not receive pending notification")
-			}
-		}()
-		go func() {
 			notificationService.Subscribe(&api.SubscribeRequest{}, firstSubscriber)
 		}()
-		<-receivedRequestChannel
+		select {
+		case _, ok := <-firstSubscriber.resps:
+			if !ok {
+				t.Errorf("notification stream closed")
+			}
+		case <-time.After(time.Second):
+			t.Errorf("late subscriber did not receive pending notification")
+		}
 
 		// add a second subscriber
 		secondSubscriber := NewSubscribeServer()
@@ -119,22 +115,19 @@ func Test(t *testing.T) {
 		}()
 
 		// Second subscriber should only get second message
-		go func() {
-			<-firstSubscriber.resps
-		}()
-		go func() {
-			subscriptionRequest, ok := <-secondSubscriber.resps
-			if !ok {
-				t.Errorf("notification stream closed")
-			}
-			receivedRequestChannel <- subscriptionRequest.Request
-		}()
 		notificationService.Notify(context.Background(), &api.NotifyRequest{
 			Title:   "Second Message",
 			Message: "",
 		})
-		request2 := <-receivedRequestChannel
-		if request2.Title != "Second Message" {
+		go func() {
+			// avoid blocking the delivery to the second subscriber
+			<-firstSubscriber.resps
+		}()
+		request2, ok := <-secondSubscriber.resps
+		if !ok {
+			t.Errorf("notification stream closed")
+		}
+		if request2.Request.Title != "Second Message" {
 			t.Errorf("late subscriber received processed notification")
 		}
 	})
