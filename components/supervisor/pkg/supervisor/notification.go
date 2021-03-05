@@ -22,6 +22,7 @@ const (
 
 func NewNotificationService() *NotificationService {
 	return &NotificationService{
+		subscriberChannels:   []chan *api.SubscribeResult{},
 		pendingNotifications: make(map[uint64]*pendingNotification),
 	}
 }
@@ -29,7 +30,7 @@ func NewNotificationService() *NotificationService {
 // NotificationService implements the notification service API
 type NotificationService struct {
 	mutex                sync.Mutex
-	subscribers          []api.NotificationService_SubscribeServer
+	subscriberChannels   []chan *api.SubscribeResult
 	nextNotificationId   uint64
 	pendingNotifications map[uint64]*pendingNotification
 }
@@ -75,11 +76,8 @@ func (srv *NotificationService) notifySubscribers(req *api.NotifyRequest) chan *
 		staleSubscribers = []int{}
 	)
 	srv.nextNotificationId++
-	for i, subscriber := range srv.subscribers {
-		var err = subscriber.Send(message)
-		if err != nil {
-			staleSubscribers = append(staleSubscribers, i)
-		}
+	for _, subscriber := range srv.subscriberChannels {
+		subscriber <- message
 	}
 	srv.removeSubscribers(staleSubscribers)
 	var channel = make(chan *api.NotifyResponse, 1)
@@ -96,19 +94,35 @@ func (srv *NotificationService) notifySubscribers(req *api.NotifyRequest) chan *
 
 // subscribes to notifications that are sent to the supervisor
 func (srv *NotificationService) Subscribe(req *api.SubscribeRequest, resp api.NotificationService_SubscribeServer) error {
+	channel := srv.subscribeSubscriber(req, resp)
+	for {
+		select {
+		case subscribeResult, ok := <-channel:
+			if !ok {
+				return status.Errorf(codes.Aborted, "Notfication channel closed.")
+			}
+			err := resp.Send(subscribeResult)
+			if err != nil {
+				return status.Errorf(codes.FailedPrecondition, "Sending notification failed. %s", err)
+			}
+		case <-resp.Context().Done():
+			return nil
+		}
+	}
+}
+
+func (srv *NotificationService) subscribeSubscriber(req *api.SubscribeRequest, resp api.NotificationService_SubscribeServer) chan *api.SubscribeResult {
 	srv.mutex.Lock()
 	defer srv.mutex.Unlock()
+	channel := make(chan *api.SubscribeResult, len(srv.pendingNotifications))
 	for id, pending := range srv.pendingNotifications {
-		var err = resp.Send(pending.message)
-		if err != nil {
-			return status.Errorf(codes.FailedPrecondition, "Cannot subscribe new subscriber as sending pending notification failed. %s", err)
-		}
+		channel <- pending.message
 		if len(pending.message.Request.Actions) == 0 {
 			delete(srv.pendingNotifications, id)
 		}
 	}
-	srv.subscribers = append(srv.subscribers, resp)
-	return nil
+	srv.subscriberChannels = append(srv.subscriberChannels, channel)
+	return channel
 }
 
 // reports user actions as response to a notification request
@@ -148,17 +162,17 @@ func (srv *NotificationService) removeSubscribers(indices []int) {
 	}
 	log.Log.WithFields(map[string]interface{}{
 		"stale":  len(indices),
-		"remain": len(srv.subscribers) - len(indices),
+		"remain": len(srv.subscriberChannels) - len(indices),
 	}).Error("Unsubscribing stale subscribers")
 	n := 0
 	j := 0
-	for i := range srv.subscribers {
+	for i := range srv.subscriberChannels {
 		if indices[j] != i {
-			srv.subscribers[n] = srv.subscribers[i]
+			srv.subscriberChannels[n] = srv.subscriberChannels[i]
 			n++
 		} else {
 			j++
 		}
 	}
-	srv.subscribers = srv.subscribers[:n]
+	srv.subscriberChannels = srv.subscriberChannels[:n]
 }

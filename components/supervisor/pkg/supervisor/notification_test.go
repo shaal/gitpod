@@ -8,10 +8,10 @@ import (
 	"google.golang.org/grpc"
 )
 
-var ctx = context.Background()
-
 type TestNotificationService_SubscribeServer struct {
-	resps chan *api.SubscribeResult
+	resps   chan *api.SubscribeResult
+	context context.Context
+	cancel  context.CancelFunc
 	grpc.ServerStream
 }
 
@@ -21,26 +21,36 @@ func (subscribeServer *TestNotificationService_SubscribeServer) Send(resp *api.S
 }
 
 func (subscribeServer *TestNotificationService_SubscribeServer) Context() context.Context {
-	return ctx
+	return subscribeServer.context
+}
+
+func NewSubscribeServer() *TestNotificationService_SubscribeServer {
+	context, cancel := context.WithCancel(context.Background())
+	return &TestNotificationService_SubscribeServer{
+		context: context,
+		cancel:  cancel,
+		resps:   make(chan *api.SubscribeResult),
+	}
 }
 
 func Test(t *testing.T) {
 	t.Run("Test happy path", func(t *testing.T) {
 		notificationService := NewNotificationService()
-		subscriber := &TestNotificationService_SubscribeServer{
-			resps: make(chan *api.SubscribeResult),
-		}
+		subscriber := NewSubscribeServer()
+		defer subscriber.cancel()
 		go func() {
 			notification := <-subscriber.resps
-			notificationService.Respond(ctx, &api.RespondRequest{
+			notificationService.Respond(subscriber.context, &api.RespondRequest{
 				RequestId: notification.RequestId,
 				Response: &api.NotifyResponse{
 					Action: notification.Request.Actions[0],
 				},
 			})
 		}()
-		notificationService.Subscribe(&api.SubscribeRequest{}, subscriber)
-		notifyResponse, err := notificationService.Notify(ctx, &api.NotifyRequest{
+		go func() {
+			notificationService.Subscribe(&api.SubscribeRequest{}, subscriber)
+		}()
+		notifyResponse, err := notificationService.Notify(subscriber.context, &api.NotifyRequest{
 			Title:   "Alert",
 			Message: "Do you like this test?",
 			Actions: []string{"yes", "no", "cancel"},
@@ -55,7 +65,7 @@ func Test(t *testing.T) {
 
 	t.Run("Notification without actions should return immediately", func(t *testing.T) {
 		notificationService := NewNotificationService()
-		notifyResponse, err := notificationService.Notify(ctx, &api.NotifyRequest{
+		notifyResponse, err := notificationService.Notify(context.Background(), &api.NotifyRequest{
 			Title:   "FYI",
 			Message: "Read this or not",
 		})
@@ -71,7 +81,7 @@ func Test(t *testing.T) {
 		notificationService := NewNotificationService()
 
 		// fire notification without any subscribers
-		_, err := notificationService.Notify(ctx, &api.NotifyRequest{
+		_, err := notificationService.Notify(context.Background(), &api.NotifyRequest{
 			Title:   "First Message",
 			Message: "Notification fired before subscription",
 		})
@@ -81,9 +91,8 @@ func Test(t *testing.T) {
 
 		// add a first subscriber
 		receivedRequestChannel := make(chan *api.NotifyRequest)
-		firstSubscriber := &TestNotificationService_SubscribeServer{
-			resps: make(chan *api.SubscribeResult),
-		}
+		firstSubscriber := NewSubscribeServer()
+		defer firstSubscriber.cancel()
 
 		// verify that late subscriber consumes cached notification
 		go func() {
@@ -97,14 +106,17 @@ func Test(t *testing.T) {
 				t.Errorf("late subscriber did not receive pending notification")
 			}
 		}()
-		notificationService.Subscribe(&api.SubscribeRequest{}, firstSubscriber)
+		go func() {
+			notificationService.Subscribe(&api.SubscribeRequest{}, firstSubscriber)
+		}()
 		<-receivedRequestChannel
 
 		// add a second subscriber
-		secondSubscriber := &TestNotificationService_SubscribeServer{
-			resps: make(chan *api.SubscribeResult),
-		}
-		notificationService.Subscribe(&api.SubscribeRequest{}, secondSubscriber)
+		secondSubscriber := NewSubscribeServer()
+		defer secondSubscriber.cancel()
+		go func() {
+			notificationService.Subscribe(&api.SubscribeRequest{}, secondSubscriber)
+		}()
 
 		// Second subscriber should only get second message
 		go func() {
@@ -117,7 +129,7 @@ func Test(t *testing.T) {
 			}
 			receivedRequestChannel <- subscriptionRequest.Request
 		}()
-		notificationService.Notify(ctx, &api.NotifyRequest{
+		notificationService.Notify(context.Background(), &api.NotifyRequest{
 			Title:   "Second Message",
 			Message: "",
 		})
@@ -132,7 +144,7 @@ func Test(t *testing.T) {
 
 		// fire notification without any subscribers
 		go func() {
-			_, err := notificationService.Notify(ctx, &api.NotifyRequest{
+			_, err := notificationService.Notify(context.Background(), &api.NotifyRequest{
 				Title:   "First Message",
 				Message: "Notification with actions",
 				Actions: []string{"ok"},
@@ -143,10 +155,11 @@ func Test(t *testing.T) {
 		}()
 
 		// add a first subscriber
-		subscriber := &TestNotificationService_SubscribeServer{
-			resps: make(chan *api.SubscribeResult),
-		}
-		notificationService.Subscribe(&api.SubscribeRequest{}, subscriber)
+		subscriber := NewSubscribeServer()
+		defer subscriber.cancel()
+		go func() {
+			notificationService.Subscribe(&api.SubscribeRequest{}, subscriber)
+		}()
 
 		// receive notification
 		subscriptionRequest, ok := <-subscriber.resps
@@ -155,7 +168,7 @@ func Test(t *testing.T) {
 		}
 
 		// invalid reponse
-		_, err := notificationService.Respond(ctx, &api.RespondRequest{
+		_, err := notificationService.Respond(context.Background(), &api.RespondRequest{
 			RequestId: subscriptionRequest.RequestId,
 			Response: &api.NotifyResponse{
 				Action: "invalid",
@@ -166,7 +179,7 @@ func Test(t *testing.T) {
 		}
 
 		// valid reponse
-		_, err = notificationService.Respond(ctx, &api.RespondRequest{
+		_, err = notificationService.Respond(context.Background(), &api.RespondRequest{
 			RequestId: subscriptionRequest.RequestId,
 			Response: &api.NotifyResponse{
 				Action: "ok",
@@ -177,7 +190,7 @@ func Test(t *testing.T) {
 		}
 
 		// stale reponse
-		_, err = notificationService.Respond(ctx, &api.RespondRequest{
+		_, err = notificationService.Respond(context.Background(), &api.RespondRequest{
 			RequestId: subscriptionRequest.RequestId,
 			Response: &api.NotifyResponse{
 				Action: "ok",
