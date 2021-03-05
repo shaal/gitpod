@@ -21,7 +21,7 @@ var notifyCmd = &cobra.Command{
 		client := api.NewNotificationServiceClient(dialSupervisor())
 
 		var (
-			ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
+			ctx, cancel = context.WithTimeout(context.Background(), 1*time.Minute)
 			title       = args[0]
 			message     = args[1]
 			actions     = args[2:]
