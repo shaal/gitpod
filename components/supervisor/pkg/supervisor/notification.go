@@ -101,10 +101,11 @@ func (srv *NotificationService) notifySubscribers(req *api.NotifyRequest) *pendi
 		message:         message,
 		responseChannel: channel,
 	}
-	srv.pendingNotifications[requestId] = pending
 	if len(req.Actions) == 0 {
 		channel <- &api.NotifyResponse{}
 		close(channel)
+	} else {
+		srv.pendingNotifications[requestId] = pending
 	}
 	return pending
 }
@@ -169,7 +170,10 @@ func (srv *NotificationService) Respond(ctx context.Context, req *api.RespondReq
 	defer srv.mutex.Unlock()
 	pending, ok := srv.pendingNotifications[req.RequestId]
 	if !ok {
-		log.Log.WithField("requestId", req.RequestId).Info("Invalid or late response to notification")
+		log.Log.WithFields(map[string]interface{}{
+			"RequestId": req.RequestId,
+			"Action":    req.Response.Action,
+		}).Info("Invalid or late response to notification")
 		return nil, status.Errorf(codes.InvalidArgument, "Invalid or late response to notification")
 	}
 	if !isActionAllowed(req.Response.Action, pending.message.Request) {
