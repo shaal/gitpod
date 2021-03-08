@@ -10,13 +10,13 @@ import (
 )
 
 type TestNotificationService_SubscribeServer struct {
-	resps   chan *api.SubscribeResult
+	resps   chan *api.SubscribeResponse
 	context context.Context
 	cancel  context.CancelFunc
 	grpc.ServerStream
 }
 
-func (subscribeServer *TestNotificationService_SubscribeServer) Send(resp *api.SubscribeResult) error {
+func (subscribeServer *TestNotificationService_SubscribeServer) Send(resp *api.SubscribeResponse) error {
 	subscribeServer.resps <- resp
 	return nil
 }
@@ -30,7 +30,7 @@ func NewSubscribeServer() *TestNotificationService_SubscribeServer {
 	return &TestNotificationService_SubscribeServer{
 		context: context,
 		cancel:  cancel,
-		resps:   make(chan *api.SubscribeResult),
+		resps:   make(chan *api.SubscribeResponse),
 	}
 }
 
@@ -52,7 +52,7 @@ func Test(t *testing.T) {
 			notificationService.Subscribe(&api.SubscribeRequest{}, subscriber)
 		}()
 		notifyResponse, err := notificationService.Notify(subscriber.context, &api.NotifyRequest{
-			Title:   "Alert",
+			Level:   api.NotifyRequest_INFO,
 			Message: "Do you like this test?",
 			Actions: []string{"yes", "no", "cancel"},
 		})
@@ -67,8 +67,8 @@ func Test(t *testing.T) {
 	t.Run("Notification without actions should return immediately", func(t *testing.T) {
 		notificationService := NewNotificationService()
 		notifyResponse, err := notificationService.Notify(context.Background(), &api.NotifyRequest{
-			Title:   "FYI",
-			Message: "Read this or not",
+			Level:   api.NotifyRequest_WARNING,
+			Message: "You have been warned...",
 		})
 		if err != nil {
 			t.Errorf("error receiving response %s", err)
@@ -83,7 +83,7 @@ func Test(t *testing.T) {
 
 		// fire notification without any subscribers
 		_, err := notificationService.Notify(context.Background(), &api.NotifyRequest{
-			Title:   "First Message",
+			Level:   api.NotifyRequest_INFO,
 			Message: "Notification fired before subscription",
 		})
 		if err != nil {
@@ -116,8 +116,8 @@ func Test(t *testing.T) {
 
 		// Second subscriber should only get second message
 		notificationService.Notify(context.Background(), &api.NotifyRequest{
-			Title:   "Second Message",
-			Message: "",
+			Level:   api.NotifyRequest_INFO,
+			Message: "Notification fired before subscription",
 		})
 		go func() {
 			// avoid blocking the delivery to the second subscriber
@@ -127,7 +127,7 @@ func Test(t *testing.T) {
 		if !ok {
 			t.Errorf("notification stream closed")
 		}
-		if request2.Request.Title != "Second Message" {
+		if request2.Request.Message != "Notification fired before subscription" {
 			t.Errorf("late subscriber received processed notification")
 		}
 	})
@@ -138,7 +138,7 @@ func Test(t *testing.T) {
 		// fire notification without any subscribers
 		go func() {
 			_, err := notificationService.Notify(context.Background(), &api.NotifyRequest{
-				Title:   "First Message",
+				Level:   api.NotifyRequest_INFO,
 				Message: "Notification with actions",
 				Actions: []string{"ok"},
 			})

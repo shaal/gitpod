@@ -22,7 +22,7 @@ const (
 
 func NewNotificationService() *NotificationService {
 	return &NotificationService{
-		subscriberChannels:   []chan *api.SubscribeResponse{},
+		subscriptions:        make(map[uint64]*subscription),
 		pendingNotifications: make(map[uint64]*pendingNotification),
 	}
 }
@@ -30,7 +30,8 @@ func NewNotificationService() *NotificationService {
 // NotificationService implements the notification service API
 type NotificationService struct {
 	mutex                sync.Mutex
-	subscriberChannels   []chan *api.SubscribeResponse
+	nextSubscriptionId   uint64
+	subscriptions        map[uint64]*subscription
 	nextNotificationId   uint64
 	pendingNotifications map[uint64]*pendingNotification
 }
@@ -38,6 +39,11 @@ type NotificationService struct {
 type pendingNotification struct {
 	message         *api.SubscribeResponse
 	responseChannel chan *api.NotifyResponse
+}
+
+type subscription struct {
+	id      uint64
+	channel chan *api.SubscribeResponse
 }
 
 // RegisterGRPC registers a gRPC service
@@ -87,9 +93,8 @@ func (srv *NotificationService) notifySubscribers(req *api.NotifyRequest) *pendi
 		}
 	)
 	srv.nextNotificationId++
-	for _, subscriber := range srv.subscriberChannels {
-		// TODO: should we raise the channel capacity here and react to blocking?
-		subscriber <- message
+	for _, subscription := range srv.subscriptions {
+		subscription.channel <- message
 	}
 	var channel = make(chan *api.NotifyResponse, 1)
 	pending := &pendingNotification{
@@ -108,10 +113,11 @@ func (srv *NotificationService) notifySubscribers(req *api.NotifyRequest) *pendi
 func (srv *NotificationService) Subscribe(req *api.SubscribeRequest, resp api.NotificationService_SubscribeServer) error {
 	log.Log.WithField("SubscribeRequest", req).Info("Subscribe entered")
 	defer log.Log.WithField("SubscribeRequest", req).Info("Subscribe exited")
-	channel := srv.subscribeSubscriber(req, resp)
+	subscription := srv.subscribeLocked(req, resp)
+	defer srv.unsubscribeLocked(subscription.id)
 	for {
 		select {
-		case SubscribeResponse, ok := <-channel:
+		case SubscribeResponse, ok := <-subscription.channel:
 			if !ok {
 				return status.Errorf(codes.Aborted, "Notfication channel closed.")
 			}
@@ -125,7 +131,7 @@ func (srv *NotificationService) Subscribe(req *api.SubscribeRequest, resp api.No
 	}
 }
 
-func (srv *NotificationService) subscribeSubscriber(req *api.SubscribeRequest, resp api.NotificationService_SubscribeServer) chan *api.SubscribeResponse {
+func (srv *NotificationService) subscribeLocked(req *api.SubscribeRequest, resp api.NotificationService_SubscribeServer) *subscription {
 	srv.mutex.Lock()
 	defer srv.mutex.Unlock()
 	channel := make(chan *api.SubscribeResponse, len(srv.pendingNotifications))
@@ -135,8 +141,26 @@ func (srv *NotificationService) subscribeSubscriber(req *api.SubscribeRequest, r
 			delete(srv.pendingNotifications, id)
 		}
 	}
-	srv.subscriberChannels = append(srv.subscriberChannels, channel)
-	return channel
+	id := srv.nextSubscriptionId
+	srv.nextSubscriptionId++
+	subscription := &subscription{
+		channel: channel,
+		id:      id,
+	}
+	srv.subscriptions[id] = subscription
+	return subscription
+}
+
+func (srv *NotificationService) unsubscribeLocked(subscriptionId uint64) {
+	srv.mutex.Lock()
+	defer srv.mutex.Unlock()
+	subscription, ok := srv.subscriptions[subscriptionId]
+	if !ok {
+		log.Log.Errorf("Could not unsubscribe subscriber")
+		return
+	}
+	delete(srv.subscriptions, subscription.id)
+	close(subscription.channel)
 }
 
 // reports user actions as response to a notification request
@@ -172,25 +196,4 @@ func isActionAllowed(action string, req *api.NotifyRequest) bool {
 		}
 	}
 	return false
-}
-
-func (srv *NotificationService) removeSubscribers(indices []int) {
-	if len(indices) == 0 {
-		return
-	}
-	log.Log.WithFields(map[string]interface{}{
-		"stale":  len(indices),
-		"remain": len(srv.subscriberChannels) - len(indices),
-	}).Error("Unsubscribing stale subscribers")
-	n := 0
-	j := 0
-	for i := range srv.subscriberChannels {
-		if indices[j] != i {
-			srv.subscriberChannels[n] = srv.subscriberChannels[i]
-			n++
-		} else {
-			j++
-		}
-	}
-	srv.subscriberChannels = srv.subscriberChannels[:n]
 }

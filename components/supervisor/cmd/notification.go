@@ -6,6 +6,7 @@ package cmd
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/gitpod-io/gitpod/common-go/log"
@@ -14,7 +15,7 @@ import (
 )
 
 var notifyCmd = &cobra.Command{
-	Use:   "notify <title> <message> <actions...>",
+	Use:   "notify <level> <message> <actions...>",
 	Short: "Notifies the user of an external event",
 	Args:  cobra.MinimumNArgs(2),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -22,13 +23,14 @@ var notifyCmd = &cobra.Command{
 
 		var (
 			ctx, cancel = context.WithTimeout(context.Background(), 1*time.Minute)
-			title       = args[0]
+			level       = toLevel(args[0])
 			message     = args[1]
 			actions     = args[2:]
 		)
 		defer cancel()
+
 		response, err := client.Notify(ctx, &api.NotifyRequest{
-			Title:   title,
+			Level:   level,
 			Message: message,
 			Actions: actions,
 		})
@@ -37,6 +39,15 @@ var notifyCmd = &cobra.Command{
 		}
 		log.WithField("action", response.Action).Info("User answered")
 	},
+}
+
+func toLevel(arg string) api.NotifyRequest_Level {
+	level, ok := api.NotifyRequest_Level_value[strings.ToUpper(arg)]
+	if !ok {
+		log.WithField("level", arg).Error("Invalid level. Using ERROR")
+		return api.NotifyRequest_ERROR
+	}
+	return api.NotifyRequest_Level(level)
 }
 
 func init() {
