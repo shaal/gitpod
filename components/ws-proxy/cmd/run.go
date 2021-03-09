@@ -5,7 +5,6 @@
 package cmd
 
 import (
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
@@ -58,24 +57,6 @@ var runCmd = &cobra.Command{
 			addr := cfg.Ingress.HostBasedIngress.Address
 			go proxy.NewWorkspaceProxy(addr, cfg.Proxy, proxy.HostBasedRouter(cfg.Ingress.HostBasedIngress.Header, cfg.Proxy.GitpodInstallation.WorkspaceHostSuffix), workspaceInfoProvider).MustServe()
 			log.WithField("ingress", cfg.Ingress.Kind).Infof("started proxying on %s", addr)
-		case PathAndHostIngress:
-			addr := cfg.Ingress.PathAndHostIngress.Address
-			go proxy.NewWorkspaceProxy(addr, cfg.Proxy, proxy.PathAndHostRouter(cfg.Ingress.PathAndHostIngress.TrimPrefix, cfg.Ingress.PathAndHostIngress.Header, cfg.Proxy.GitpodInstallation.WorkspaceHostSuffix), workspaceInfoProvider).MustServe()
-			log.WithField("ingress", cfg.Ingress.Kind).Infof("started proxying on %s", addr)
-		case PathAndPortIngress:
-			var (
-				addr   = cfg.Ingress.PathAndPortIngress.Address
-				router = proxy.PathAndPortRouter(cfg.Ingress.PathAndPortIngress.TrimPrefix)
-			)
-			go proxy.NewWorkspaceProxy(addr, cfg.Proxy, router, workspaceInfoProvider).MustServe()
-			log.WithField("ingress", cfg.Ingress.Kind).Infof("started proxying on %s", addr)
-
-			for port := cfg.Ingress.PathAndPortIngress.Start; port <= cfg.Ingress.PathAndPortIngress.End; port++ {
-				go proxy.
-					NewWorkspaceProxy(fmt.Sprintf(":%d", port), cfg.Proxy, router, workspaceInfoProvider).
-					MustServe()
-			}
-			log.WithField("ingress", cfg.Ingress.Kind).Infof("started proxying on port range :%d-:%d", cfg.Ingress.PathAndPortIngress.Start, cfg.Ingress.PathAndPortIngress.End)
 		default:
 			log.Fatalf("unknown ingress kind %s", cfg.Ingress.Kind)
 		}
