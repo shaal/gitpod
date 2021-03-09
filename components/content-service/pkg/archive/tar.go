@@ -7,11 +7,12 @@ package archive
 import (
 	"context"
 	"io"
-	"os/exec"
 	"time"
 
+	"github.com/containers/storage/pkg/archive"
+	"github.com/containers/storage/pkg/idtools"
+	rsystem "github.com/opencontainers/runc/libcontainer/system"
 	"github.com/opentracing/opentracing-go"
-	"golang.org/x/xerrors"
 
 	"github.com/gitpod-io/gitpod/common-go/log"
 	"github.com/gitpod-io/gitpod/common-go/tracing"
@@ -68,14 +69,33 @@ func ExtractTarbal(ctx context.Context, src io.Reader, dst string, opts ...TarOp
 	span.LogKV("src", src, "dst", dst)
 	defer tracing.FinishSpan(span, &err)
 
-	tarcmd := exec.Command("tar", "--extract", "--preserve-permissions", "--same-owner")
-	tarcmd.Dir = dst
-	tarcmd.Stdin = src
+	uidMaps := make([]idtools.IDMap, len(cfg.UIDMaps))
+	for i, m := range cfg.UIDMaps {
+		uidMaps[i] = idtools.IDMap{
+			ContainerID: m.ContainerID,
+			HostID:      m.HostID,
+			Size:        m.Size,
+		}
+	}
+	gidMaps := make([]idtools.IDMap, len(cfg.GIDMaps))
+	for i, m := range cfg.GIDMaps {
+		gidMaps[i] = idtools.IDMap{
+			ContainerID: m.ContainerID,
+			HostID:      m.HostID,
+			Size:        m.Size,
+		}
+	}
 
-	var msg []byte
-	msg, err = tarcmd.CombinedOutput()
+	err = archive.Unpack(src, dst, &archive.TarOptions{
+		Compression: archive.Uncompressed,
+		CopyPass:    true,
+		InUserNS:    rsystem.RunningInUserNS(),
+		UIDMaps:     uidMaps,
+		GIDMaps:     gidMaps,
+	})
 	if err != nil {
-		return xerrors.Errorf("tar %s: %s", dst, err.Error()+";"+string(msg))
+		log.WithError(err).Error("error reading tar")
+		return
 	}
 
 	log.WithField("duration", time.Since(start).Milliseconds()).Debug("untar complete")
