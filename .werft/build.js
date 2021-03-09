@@ -115,13 +115,10 @@ async function build(context, version) {
             werft.phase("publish", `creating GitHub release ${version}...`);
             const releaseBranch = exec("git rev-parse --abbrev-ref HEAD", {silent: true}).stdout.trim();
             const releaseFilesTmpDir = exec(`scripts/create-release-tars.sh ${version}`, {silent: true}).stdout.trim();
+            const prereleaseFlag = semver.prerelease(version) !== null ? "-prerelease" : "";
             const tag = `v${version}`;
-            const description = `
-            Gitpod Self-Hosted ${version}
-
-            Docs: https://www.gitpod.io/docs/self-hosted/latest/self-hosted/
-            `;
-            exec(`github-release gitpod-io/gitpod ${tag} ${releaseBranch} ${description} "${releaseFilesTmpDir}/*"`)
+            const description = `Gitpod Self-Hosted Docs: https://www.gitpod.io/docs/self-hosted/latest/self-hosted/`;
+            exec(`github-release ${prereleaseFlag} gitpod-io/gitpod ${tag} ${releaseBranch} ${description} "${releaseFilesTmpDir}/*"`)
 
             werft.done('publish');
         } catch (err) {
