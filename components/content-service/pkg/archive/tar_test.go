@@ -75,7 +75,7 @@ func TestExtractTarbal(t *testing.T) {
 			for _, file := range test.Files {
 				stat, err := os.Stat(filepath.Join(targetFolder, file.Name))
 				if err != nil {
-					t.Errorf("expected %s", file.Name)
+					t.Errorf("expected %s: %v", file.Name, err)
 					continue
 				}
 				uid := stat.Sys().(*syscall.Stat_t).Uid

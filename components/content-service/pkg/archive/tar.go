@@ -5,13 +5,9 @@
 package archive
 
 import (
-	"archive/tar"
 	"context"
 	"io"
-	"os"
 	"os/exec"
-	"path"
-	"sort"
 	"time"
 
 	"github.com/opentracing/opentracing-go"
@@ -72,69 +68,16 @@ func ExtractTarbal(ctx context.Context, src io.Reader, dst string, opts ...TarOp
 	span.LogKV("src", src, "dst", dst)
 	defer tracing.FinishSpan(span, &err)
 
-	pr, pw := io.Pipe()
-	src = io.TeeReader(src, pw)
-	tarReader := tar.NewReader(pr)
-	type Info struct {
-		UID, GID int
-	}
-	finished := make(chan bool)
-	m := make(map[string]Info)
-	go func() {
-		defer close(finished)
-		for {
-			hdr, err := tarReader.Next()
-			if err == io.EOF {
-				finished <- true
-				return
-			}
-			if err != nil {
-				log.WithError(err).Error("error reading tar")
-				return
-			} else {
-				m[hdr.Name] = Info{
-					UID: hdr.Uid,
-					GID: hdr.Gid,
-				}
-			}
-		}
-	}()
-
-	tarcmd := exec.Command("tar", "x")
+	tarcmd := exec.Command("tar", "--extract", "--preserve-permissions")
 	tarcmd.Dir = dst
 	tarcmd.Stdin = src
 
-	msg, err := tarcmd.CombinedOutput()
+	var msg []byte
+	msg, err = tarcmd.CombinedOutput()
 	if err != nil {
 		return xerrors.Errorf("tar %s: %s", dst, err.Error()+";"+string(msg))
 	}
-	<-finished
 
-	// lets create a sorted list of pathes and chown depth first.
-	paths := make([]string, 0, len(m))
-	for path := range m {
-		paths = append(paths, path)
-	}
-	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
-	for _, p := range paths {
-		v := m[p]
-		uid := toHostID(v.UID, cfg.UIDMaps)
-		gid := toHostID(v.GID, cfg.GIDMaps)
-		err = os.Lchown(path.Join(dst, p), uid, gid)
-		if err != nil {
-			log.WithError(err).WithField("uid", uid).WithField("gid", gid).WithField("path", p).Warn("cannot chown")
-		}
-	}
 	log.WithField("duration", time.Since(start).Milliseconds()).Debug("untar complete")
 	return nil
-}
-
-func toHostID(containerID int, idMap []IDMapping) int {
-	for _, m := range idMap {
-		if (containerID >= m.ContainerID) && (containerID <= (m.ContainerID + m.Size - 1)) {
-			hostID := m.HostID + (containerID - m.ContainerID)
-			return hostID
-		}
-	}
-	return containerID
 }
