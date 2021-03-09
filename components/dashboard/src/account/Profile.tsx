@@ -2,12 +2,14 @@ import { User } from "@gitpod/gitpod-protocol";
 import { useContext, useState } from "react";
 import Modal from "../components/Modal";
 import { SettingsPage } from "../components/SettingsPage";
-import { ServiceContext } from "../service/service";
+import { UserContext } from "../contexts";
 import accountMenu from "./account-menu";
 
 export default function Profile() {
-    const ctx = useContext(ServiceContext);
+    const { user } = useContext(UserContext);
+
     const [modal, setModal] = useState(false);
+
     const close = () => setModal(false);
     return <div>
         <Modal visible={modal}>
@@ -23,14 +25,14 @@ export default function Profile() {
             <div className="flex flex-col lg:flex-row">
                 <div className="pb-6">
                     <h4>Name</h4>
-                    <input type="text" value={ctx.user!.name} onChange={(v) => { console.log(v) }} />
+                    <input type="text" value={user?.name} onChange={(v) => { console.log(v) }} />
                     <h4 className="pt-6">Email</h4>
-                    <input type="text" value={User.getPrimaryEmail(ctx.user!)} onChange={(v) => { console.log(v) }} />
+                    <input type="text" value={user && User.getPrimaryEmail(user)} onChange={(v) => { console.log(v) }} />
                 </div>
                 <div className="lg:pl-14">
                     <h4>Avatar</h4>
                     <img className="rounded-full w-24 h-24 border-2 border-transparent hover:border-indigo-400"
-                        src={ctx.user!.avatarUrl} alt={ctx.user!.name} />
+                        src={user?.avatarUrl} alt={user?.name} />
                 </div>
             </div>
             <h3 className="pt-14">Delete Account</h3>
