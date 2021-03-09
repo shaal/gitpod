@@ -2,6 +2,8 @@ package supervisor
 
 import (
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,10 +15,14 @@ type TestNotificationService_SubscribeServer struct {
 	resps   chan *api.SubscribeResponse
 	context context.Context
 	cancel  context.CancelFunc
+	slow    bool
 	grpc.ServerStream
 }
 
 func (subscribeServer *TestNotificationService_SubscribeServer) Send(resp *api.SubscribeResponse) error {
+	if subscribeServer.slow {
+		<-time.After(time.Second)
+	}
 	subscribeServer.resps <- resp
 	return nil
 }
@@ -30,7 +36,7 @@ func NewSubscribeServer() *TestNotificationService_SubscribeServer {
 	return &TestNotificationService_SubscribeServer{
 		context: context,
 		cancel:  cancel,
-		resps:   make(chan *api.SubscribeResponse),
+		resps:   make(chan *api.SubscribeResponse, 1),
 	}
 }
 
@@ -103,7 +109,7 @@ func Test(t *testing.T) {
 			if !ok {
 				t.Errorf("notification stream closed")
 			}
-		case <-time.After(time.Second):
+		case <-time.After(2 * time.Second):
 			t.Errorf("late subscriber did not receive pending notification")
 		}
 
@@ -115,10 +121,13 @@ func Test(t *testing.T) {
 		}()
 
 		// Second subscriber should only get second message
-		notificationService.Notify(context.Background(), &api.NotifyRequest{
-			Level:   api.NotifyRequest_INFO,
-			Message: "Notification fired before subscription",
-		})
+		go func() {
+			notificationService.Notify(context.Background(), &api.NotifyRequest{
+				Level:   api.NotifyRequest_INFO,
+				Message: "Notification fired before subscription",
+				Actions: []string{"ok"},
+			})
+		}()
 		go func() {
 			// avoid blocking the delivery to the second subscriber
 			<-firstSubscriber.resps
@@ -192,5 +201,57 @@ func Test(t *testing.T) {
 		if err == nil {
 			t.Errorf("expected error on stale response")
 		}
+	})
+}
+
+func BackpressureTest(t *testing.T) {
+	t.Run("Backpressure", func(t *testing.T) {
+		notificationService := NewNotificationService()
+
+		subscriber := NewSubscribeServer()
+		defer subscriber.cancel()
+
+		// fire initial notifications
+		_, err := notificationService.Notify(context.Background(), &api.NotifyRequest{
+			Level:   api.NotifyRequest_INFO,
+			Message: "Notification 0",
+		})
+		if err != nil {
+			t.Errorf("error on notification %s", err)
+		}
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// consume the first message to be in sync
+			<-subscriber.resps
+			subscriber.slow = true
+
+			// send messages to stress the subscriber
+			for i := 1; i < NotifierMaxPendingNotifications+1; i++ {
+				_, err := notificationService.Notify(context.Background(), &api.NotifyRequest{
+					Level:   api.NotifyRequest_INFO,
+					Message: fmt.Sprintf("Notification %d", i),
+				})
+				if err != nil {
+					t.Errorf("error on notification %s", err)
+				}
+			}
+
+			// send message to stress the notifier
+			_, err := notificationService.Notify(context.Background(), &api.NotifyRequest{
+				Level:   api.NotifyRequest_INFO,
+				Message: fmt.Sprintf("Notification %d", NotifierMaxPendingNotifications+1),
+			})
+			if err == nil {
+				t.Errorf("Expected error on notifier backpressure")
+			}
+		}()
+
+		err = notificationService.Subscribe(&api.SubscribeRequest{}, subscriber)
+		if err == nil {
+			t.Errorf("Expected unresponsive subscriber to be cancelled")
+		}
+		wg.Wait()
 	})
 }

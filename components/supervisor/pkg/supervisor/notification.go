@@ -17,7 +17,8 @@ import (
 )
 
 const (
-	maxPendingNotifications = 100
+	NotifierMaxPendingNotifications   = 120
+	SubscriberMaxPendingNotifications = 100
 )
 
 func NewNotificationService() *NotificationService {
@@ -44,6 +45,15 @@ type pendingNotification struct {
 type subscription struct {
 	id      uint64
 	channel chan *api.SubscribeResponse
+	once    sync.Once
+	closed  bool
+}
+
+func (subscription *subscription) close() {
+	subscription.once.Do(func() {
+		close(subscription.channel)
+		subscription.closed = true
+	})
 }
 
 // RegisterGRPC registers a gRPC service
@@ -60,7 +70,7 @@ func (srv *NotificationService) RegisterREST(mux *runtime.ServeMux, grpcEndpoint
 func (srv *NotificationService) Notify(ctx context.Context, req *api.NotifyRequest) (*api.NotifyResponse, error) {
 	log.Log.WithField("NotifyRequest", req).Info("Notify entered")
 	defer log.Log.WithField("NotifyRequest", req).Info("Notify exited")
-	if srv.nextNotificationId >= maxPendingNotifications {
+	if len(srv.pendingNotifications) >= NotifierMaxPendingNotifications {
 		return nil, status.Error(codes.ResourceExhausted, "Max number of pending notifications exceeded")
 	}
 	var pending = srv.notifySubscribers(req)
@@ -76,8 +86,12 @@ func (srv *NotificationService) Notify(ctx context.Context, req *api.NotifyReque
 		log.Log.Info("notify cancelled")
 		srv.mutex.Lock()
 		defer srv.mutex.Unlock()
-		close(pending.responseChannel)
-		delete(srv.pendingNotifications, pending.message.RequestId)
+		// make sure the notification has not been responded in between these selectors
+		_, ok := srv.pendingNotifications[pending.message.RequestId]
+		if ok {
+			delete(srv.pendingNotifications, pending.message.RequestId)
+			close(pending.responseChannel)
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -94,18 +108,29 @@ func (srv *NotificationService) notifySubscribers(req *api.NotifyRequest) *pendi
 	)
 	srv.nextNotificationId++
 	for _, subscription := range srv.subscriptions {
-		subscription.channel <- message
+		select {
+		case subscription.channel <- message:
+			// log.Log.WithField("len", len(subscription.channel))
+			// 	   .WithField("cap", cap(subscription.channel))
+			// 	   .Info("Wrote to subscriber")
+			// all good
+		default:
+			// subscriber doesn't consume messages fast enough
+			log.Log.WithField("subscription", req).Info("Cancelling unresponsive subscriber")
+			delete(srv.subscriptions, subscription.id)
+			subscription.close()
+		}
 	}
 	var channel = make(chan *api.NotifyResponse, 1)
 	pending := &pendingNotification{
 		message:         message,
 		responseChannel: channel,
 	}
+	srv.pendingNotifications[requestId] = pending
 	if len(req.Actions) == 0 {
+		// produce an immediate response
 		channel <- &api.NotifyResponse{}
 		close(channel)
-	} else {
-		srv.pendingNotifications[requestId] = pending
 	}
 	return pending
 }
@@ -118,15 +143,16 @@ func (srv *NotificationService) Subscribe(req *api.SubscribeRequest, resp api.No
 	defer srv.unsubscribeLocked(subscription.id)
 	for {
 		select {
-		case SubscribeResponse, ok := <-subscription.channel:
-			if !ok {
-				return status.Errorf(codes.Aborted, "Notfication channel closed.")
+		case subscribeResponse, ok := <-subscription.channel:
+			if !ok || subscription.closed {
+				return status.Errorf(codes.Aborted, "Subscriber channel closed.")
 			}
-			err := resp.Send(SubscribeResponse)
+			err := resp.Send(subscribeResponse)
 			if err != nil {
 				return status.Errorf(codes.FailedPrecondition, "Sending notification failed. %s", err)
 			}
 		case <-resp.Context().Done():
+			log.Log.WithField("SubscribeRequest", req).Info("Subscriber cancelled")
 			return nil
 		}
 	}
@@ -135,7 +161,9 @@ func (srv *NotificationService) Subscribe(req *api.SubscribeRequest, resp api.No
 func (srv *NotificationService) subscribeLocked(req *api.SubscribeRequest, resp api.NotificationService_SubscribeServer) *subscription {
 	srv.mutex.Lock()
 	defer srv.mutex.Unlock()
-	channel := make(chan *api.SubscribeResponse, len(srv.pendingNotifications))
+	// account for some back pressure
+	channel := make(chan *api.SubscribeResponse, SubscriberMaxPendingNotifications)
+	log.Log.WithField("pending", len(srv.pendingNotifications)).Info("sending pending notifications")
 	for id, pending := range srv.pendingNotifications {
 		channel <- pending.message
 		if len(pending.message.Request.Actions) == 0 {
@@ -161,7 +189,7 @@ func (srv *NotificationService) unsubscribeLocked(subscriptionId uint64) {
 		return
 	}
 	delete(srv.subscriptions, subscription.id)
-	close(subscription.channel)
+	subscription.close()
 }
 
 // reports user actions as response to a notification request
@@ -183,8 +211,8 @@ func (srv *NotificationService) Respond(ctx context.Context, req *api.RespondReq
 		}).Error("Invalid user action on notification")
 		return nil, status.Errorf(codes.InvalidArgument, "Invalid user action on notification")
 	}
-	delete(srv.pendingNotifications, req.RequestId)
 	pending.responseChannel <- req.Response
+	delete(srv.pendingNotifications, pending.message.RequestId)
 	close(pending.responseChannel)
 	return &api.RespondResponse{}, nil
 }
