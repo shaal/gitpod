@@ -7,12 +7,13 @@ package archive
 import (
 	"context"
 	"io"
+	"os/exec"
 	"time"
 
-	"github.com/containers/storage/pkg/archive"
+	graphdriver "github.com/containers/storage/drivers"
 	"github.com/containers/storage/pkg/idtools"
-	rsystem "github.com/opencontainers/runc/libcontainer/system"
 	"github.com/opentracing/opentracing-go"
+	"golang.org/x/xerrors"
 
 	"github.com/gitpod-io/gitpod/common-go/log"
 	"github.com/gitpod-io/gitpod/common-go/tracing"
@@ -69,6 +70,17 @@ func ExtractTarbal(ctx context.Context, src io.Reader, dst string, opts ...TarOp
 	span.LogKV("src", src, "dst", dst)
 	defer tracing.FinishSpan(span, &err)
 
+	tarcmd := exec.Command("tar", "--extract", "--preserve-permissions")
+	tarcmd.Dir = dst
+	tarcmd.Stdin = src
+
+	var msg []byte
+	msg, err = tarcmd.CombinedOutput()
+	if err != nil {
+		err = xerrors.Errorf("tar %s: %s", dst, err.Error()+";"+string(msg))
+		return
+	}
+
 	uidMaps := make([]idtools.IDMap, len(cfg.UIDMaps))
 	for i, m := range cfg.UIDMaps {
 		uidMaps[i] = idtools.IDMap{
@@ -86,15 +98,9 @@ func ExtractTarbal(ctx context.Context, src io.Reader, dst string, opts ...TarOp
 		}
 	}
 
-	err = archive.Unpack(src, dst, &archive.TarOptions{
-		Compression: archive.Uncompressed,
-		CopyPass:    true,
-		InUserNS:    rsystem.RunningInUserNS(),
-		UIDMaps:     uidMaps,
-		GIDMaps:     gidMaps,
-	})
+	err = graphdriver.ChownPathByMaps(dst, idtools.NewIDMappingsFromMaps(uidMaps, gidMaps), nil)
 	if err != nil {
-		log.WithError(err).Error("error reading tar")
+		log.WithError(err).WithField("path", dst).Warn("cannot chown")
 		return
 	}
 
