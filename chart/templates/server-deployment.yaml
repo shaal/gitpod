@@ -84,11 +84,6 @@ spec:
           privileged: false
           runAsUser: 31001
         volumeMounts:
-{{- if $comp.storage }}
-        - name: storage-key
-          mountPath: "/storageKeySecret"
-          readOnly: true
-{{- end }}
 {{- if $comp.github.app }}
         - name: github-app-cert-secret
           mountPath: "/github-app-cert"
@@ -235,11 +230,6 @@ spec:
 {{ toYaml $comp.serverContainer.env | indent 8 }}
 {{- end }}
       volumes:
-{{- if $comp.storage.secretName }}
-      - name: storage-key
-        secret:
-          secretName: {{ $comp.storage.secretName }}
-{{- end }}
 {{- if $comp.github.app }}
       - name: github-app-cert-secret
         secret:
