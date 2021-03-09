@@ -68,7 +68,7 @@ func ExtractTarbal(ctx context.Context, src io.Reader, dst string, opts ...TarOp
 	span.LogKV("src", src, "dst", dst)
 	defer tracing.FinishSpan(span, &err)
 
-	tarcmd := exec.Command("tar", "--extract", "--preserve-permissions")
+	tarcmd := exec.Command("tar", "--extract", "--preserve-permissions", "--same-owner")
 	tarcmd.Dir = dst
 	tarcmd.Stdin = src
 
